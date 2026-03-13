@@ -249,7 +249,7 @@ function renderFavorites() {
 function showJournalDetails(book) {
     ui.showModal();
     const modalBody = document.getElementById('modal-body');
-    const userReview = myReviews.find(r => r.book_id === book.id) || { content: '', rating: 0 };
+    const userReview = myReviews.find(r => r.book_id === book.id) || { content: '', rating: 1 };
 
     modalBody.innerHTML = `
         <div style="flex: 1; min-width: 250px;">
@@ -311,7 +311,7 @@ async function saveReview(bookId) {
                 content, 
                 rating,
                 updated_at: new Date() 
-            });
+            }, { onConflict: 'user_id,book_id' });
 
         if (error) throw error;
         
@@ -487,7 +487,7 @@ async function toggleFavorite(bookId) {
             user_id: currentUser.id,
             is_favorite: isFav,
             updated_at: new Date()
-        });
+        }, { onConflict: 'user_id,book_id' });
 
         if (upsertError) throw upsertError;
 
