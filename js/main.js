@@ -114,6 +114,13 @@ function setupEventListeners() {
             ui.showToast(`Tema ${theme} aplicado`);
         });
     });
+
+    // Contact form
+    document.getElementById('contact-form')?.addEventListener('submit', (e) => {
+        e.preventDefault();
+        ui.showToast('Mensaje enviado. Te contactaremos pronto.', 'success');
+        e.target.reset();
+    });
 }
 
 function applyTheme(theme) {
@@ -167,10 +174,11 @@ async function loadUserData() {
                     journal_id: j.id, // Save the journal entry UUID separately
                     id: j.book_id,    // Ensure ID is the book's string ID for FK consistency
                     status: j.status,
+                    in_journal: j.in_journal,
+                    in_wishlist: j.in_wishlist,
                     added_at: j.added_at
                 };
             });
-            renderJournal();
         }
         
         const { data: reviews, error: rError } = await supabase
@@ -181,7 +189,9 @@ async function loadUserData() {
         if (!rError) myReviews = reviews;
         
         renderReadingNow();
+        renderJournal();
         renderFavorites();
+        renderWishlist();
         updateStats();
     } catch (e) {
         console.warn('Could not load data from Supabase. Make sure tables exist.', e);
@@ -192,7 +202,8 @@ function renderReadingNow() {
     const container = document.getElementById('reading-now-container');
     if (!container) return;
     
-    const activeBooks = myBooks.filter(b => b.status === 'reading');
+    // Only books that are in journal and being read
+    const activeBooks = myBooks.filter(b => b.in_journal && b.status === 'reading');
     container.innerHTML = '';
 
     if (activeBooks.length === 0) {
@@ -201,22 +212,43 @@ function renderReadingNow() {
     }
 
     activeBooks.forEach(book => {
-        const card = ui.renderBookCard(book, showJournalDetails);
+        const card = ui.renderBookCard(book, showBookModal);
         container.appendChild(card);
     });
 }
 
 function renderJournal() {
     const container = document.getElementById('journal-list');
+    if (!container) return;
     container.innerHTML = '';
     
-    if (myBooks.length === 0) {
+    const journalBooks = myBooks.filter(b => b.in_journal);
+
+    if (journalBooks.length === 0) {
         container.innerHTML = '<div class="empty-state">Tu journal está vacío. ¡Empieza a buscar libros!</div>';
         return;
     }
 
-    myBooks.forEach(book => {
-        const card = ui.renderBookCard(book, showJournalDetails);
+    journalBooks.forEach(book => {
+        const card = ui.renderBookCard(book, showBookModal);
+        container.appendChild(card);
+    });
+}
+
+function renderWishlist() {
+    const container = document.getElementById('wishlist-list');
+    if (!container) return;
+    container.innerHTML = '';
+    
+    const wishlistBooks = myBooks.filter(b => b.in_wishlist);
+
+    if (wishlistBooks.length === 0) {
+        container.innerHTML = '<div class="empty-state">Tu lista de deseos está vacía.</div>';
+        return;
+    }
+
+    wishlistBooks.forEach(book => {
+        const card = ui.renderBookCard(book, showBookModal);
         container.appendChild(card);
     });
 }
@@ -228,10 +260,14 @@ function renderFavorites() {
     // Filter reviews that are marked as favorite and have book data
     const favoriteBooks = myReviews
         .filter(r => r.is_favorite && r.books)
-        .map(r => ({
-            ...r.books,
-            is_favorite: true
-        }));
+        .map(r => {
+            // Merge with myBooks so it retains in_wishlist, in_journal state dynamically edited
+            const baseBook = myBooks.find(b => b.id === r.book_id) || r.books;
+            return {
+                ...baseBook,
+                is_favorite: true
+            };
+        });
     
     container.innerHTML = '';
 
@@ -241,61 +277,101 @@ function renderFavorites() {
     }
 
     favoriteBooks.forEach(book => {
-        const card = ui.renderBookCard(book, showJournalDetails);
+        const card = ui.renderBookCard(book, showBookModal);
         container.appendChild(card);
     });
 }
 
-function showJournalDetails(book) {
+async function showBookModal(initialBook) {
     ui.showModal();
     const modalBody = document.getElementById('modal-body');
-    const userReview = myReviews.find(r => r.book_id === book.id) || { content: '', rating: 1 };
+    modalBody.innerHTML = '<div class="skeleton" style="width: 100%; height: 300px;"></div>';
+
+    // Fallback if it has been deleted or network fails
+    let details = { description: 'Sin descripción disponible.' };
+    try {
+        const res = await api.getBookDetails(initialBook.id);
+        if (res) details = res;
+    } catch(e) {}
+    
+    // Check if user has this book saved
+    const book = myBooks.find(b => b.id === initialBook.id) || 
+                 { ...initialBook, in_journal: false, in_wishlist: false, status: 'want_to_read' };
+    
+    book.title = details.title || book.title || initialBook.title;
+    book.cover_url = book.cover_url || initialBook.cover_url || details.cover_url;
+    book.description = details.description || book.description || 'Sin descripción disponible.';
+
+    const userReview = myReviews.find(r => r.book_id === book.id) || { content: '', rating: 0, is_favorite: false };
 
     modalBody.innerHTML = `
         <div style="flex: 1; min-width: 250px;">
-            <img src="${book.cover_url || 'https://via.placeholder.com/250x375'}" style="width: 100%; border-radius: var(--radius-lg); box-shadow: var(--shadow);">
-            <div style="margin-top: 1.5rem;">
-                <label style="font-size:0.875rem; font-weight:600; color: var(--primary);">Estado de lectura</label>
-                <select class="input-field" style="margin-top:0.5rem;" onchange="updateStatus('${book.id}', this.value)">
-                    <option value="reading" ${book.status === 'reading' ? 'selected' : ''}>Leyendo</option>
-                    <option value="finished" ${book.status === 'finished' ? 'selected' : ''}>Terminado</option>
-                    <option value="want_to_read" ${book.status === 'want_to_read' ? 'selected' : ''}>Por leer</option>
-                </select>
+            <img src="${book.cover_url || 'https://via.placeholder.com/250x375'}" style="width: 100%; border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);">
+            
+            <div style="margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                <button id="modal-journal-btn" class="btn ${book.in_journal ? 'btn-ghost active' : 'btn-primary'}" style="width:100%;">
+                    ${book.in_journal ? '✓ En Journal' : '+ Añadir al Journal'}
+                </button>
+                <button id="modal-wishlist-btn" class="btn ${book.in_wishlist ? 'btn-ghost active' : 'btn-secondary'}" style="width:100%; background: var(--light); color: var(--primary);">
+                    ${book.in_wishlist ? '✓ En Wishlist' : '+ Añadir a Wishlist'}
+                </button>
+                <button id="modal-fav-btn" class="btn ${userReview.is_favorite ? 'btn-ghost active' : 'btn-ghost'}" style="width:100%; border: 1px solid var(--primary);">
+                    ${userReview.is_favorite ? '♥ Favorito' : '♡ Marcar Favorito'}
+                </button>
+
+                ${(book.in_journal || book.in_wishlist) ? `
+                <div style="margin-top: 1rem;">
+                    <label style="font-size:0.875rem; font-weight:600; color: var(--primary);">Estado de lectura</label>
+                    <select class="input-field" style="margin-top:0.5rem;" onchange="updateStatus('${book.id}', this.value)">
+                        <option value="reading" ${book.status === 'reading' ? 'selected' : ''}>Leyendo</option>
+                        <option value="finished" ${book.status === 'finished' ? 'selected' : ''}>Terminado</option>
+                        <option value="want_to_read" ${book.status === 'want_to_read' ? 'selected' : ''}>Pendiente / Por leer</option>
+                    </select>
+                </div>
+                ` : ''}
             </div>
         </div>
         <div style="flex: 2; min-width: 300px;">
-            <h2 style="margin-top: 0; color: var(--primary);">${book.title}</h2>
-            <p style="color: var(--secondary); font-weight: 500; margin-bottom: 1rem;">${book.author}</p>
+            <h2 style="margin-top: 0;">${book.title}</h2>
+            <p style="color: var(--secondary); font-weight: 600; margin-bottom: 0.5rem;">${book.author}</p>
             
-            <div style="margin-bottom: 1.5rem; max-height: 150px; overflow-y: auto; padding-right: 10px;">
-                <label style="font-size:0.75rem; font-weight:700; text-transform: uppercase; color: var(--gray-800); display: block; margin-bottom: 0.5rem;">Descripción</label>
-                <p style="font-size: 0.875rem; color: var(--gray-900); line-height: 1.6;">${book.description || 'Sin descripción disponible.'}</p>
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+                <button class="lang-btn active" onclick="changeLang('${book.id}', 'es')">ES</button>
+                <button class="lang-btn" onclick="changeLang('${book.id}', 'en')">EN</button>
             </div>
 
+            <div style="margin-bottom: 1.5rem; max-height: 150px; overflow-y: auto; padding-right: 10px;">
+                <p id="modal-description" style="color: var(--gray-800); line-height: 1.6;">${book.description}</p>
+            </div>
+            
+            ${(book.in_journal || book.in_wishlist || userReview.is_favorite) ? `
             <div id="inline-review-container">
                 <label style="font-size:0.875rem; font-weight:600; color: var(--primary);">Tu Reseña</label>
-                <div id="review-text" contenteditable="true" class="input-field" style="min-height: 120px; margin-top: 0.5rem; background: var(--gray-50); cursor: text; line-height: 1.5;">
-                    ${userReview.content || 'Escribe tus pensamientos sobre este libro...'}
-                </div>
+                <div id="review-text" contenteditable="true" class="input-field" style="min-height: 80px; margin-top: 0.5rem; background: var(--gray-50); cursor: text; line-height: 1.5;">${userReview.content || ''}</div>
                 <div style="margin-top: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                         <label style="font-size:0.875rem; font-weight:600;">Rating:</label>
-                        <input type="number" id="review-rating" min="1" max="5" value="${userReview.rating}" class="input-field" style="width: 70px;">
+                        <input type="number" id="review-rating" min="0" max="5" value="${userReview.rating || 0}" class="input-field" style="width: 70px;">
                     </div>
                     <button id="save-review-btn" class="btn btn-primary" style="padding: 0.5rem 1.5rem;">Guardar Reseña</button>
                 </div>
-            </div>
+            </div>` : ''}
         </div>
     `;
 
-    document.getElementById('save-review-btn').onclick = () => saveReview(book.id);
+    document.getElementById('modal-journal-btn').onclick = () => toggleJournal(book);
+    document.getElementById('modal-wishlist-btn').onclick = () => toggleWishlist(book);
+    document.getElementById('modal-fav-btn').onclick = () => toggleFavorite(book.id);
+    
+    if (document.getElementById('save-review-btn')) {
+        document.getElementById('save-review-btn').onclick = () => saveReview(book.id);
+    }
 }
 
 async function saveReview(bookId) {
     const content = document.getElementById('review-text').innerText;
-    const rating = parseInt(document.getElementById('review-rating').value);
+    const rating = parseInt(document.getElementById('review-rating').value) || 0;
     
-    // Find metadata for safety
     const book = myBooks.find(b => b.id === bookId) || { id: bookId };
 
     ui.showToast('Guardando reseña...');
@@ -316,14 +392,57 @@ async function saveReview(bookId) {
         if (error) throw error;
         
         ui.showToast('Reseña guardada!', 'success');
-        loadUserData();
+        await loadUserData();
     } catch (e) {
         console.error('Save review error:', e);
         ui.showToast(e.message || 'Error al guardar reseña', 'error');
     }
 }
 
-async function updateStatus(bookId, status) {
+window.changeLang = async (bookId, lang) => {
+    const descEl = document.getElementById('modal-description');
+    ui.showToast('Buscando versión en ' + lang.toUpperCase() + '...');
+    descEl.style.opacity = '0.5';
+    
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.innerText.toLowerCase() === lang);
+    });
+
+    const details = await api.getBookDetails(bookId, lang);
+    if (details && details.description) {
+        descEl.innerText = details.description;
+        if (lang !== 'en' && details.description.length < 50) {
+            ui.showToast('Descripción no disponible en este idioma en Open Library. Intentando fallback...', 'info');
+             const fallback = await api.getBookDetails(bookId, 'en');
+             if(fallback && fallback.description && fallback.description.length >= 50) {
+                 descEl.innerText = fallback.description;
+             }
+        }
+    }
+    descEl.style.opacity = '1';
+};
+
+async function ensureBookExists(book) {
+    const { data: existingBook } = await supabase
+        .from('books')
+        .select('id')
+        .eq('id', book.id)
+        .maybeSingle();
+
+    if (!existingBook) {
+        const details = await api.getBookDetails(book.id);
+        const { error: insertError } = await supabase.from('books').insert([{
+            id: book.id,
+            title: book.title || 'Título desconocido',
+            author: book.author || 'Autor desconocido',
+            cover_url: book.cover_url,
+            description: details && details.description ? details.description : ''
+        }]);
+        if (insertError) throw insertError;
+    }
+}
+
+window.updateStatus = async function(bookId, status) {
     ui.showToast('Actualizando estado...');
     const { error } = await supabase
         .from('user_books')
@@ -334,14 +453,17 @@ async function updateStatus(bookId, status) {
         ui.showToast(error.message, 'error');
     } else {
         ui.showToast('Estado actualizado', 'success');
-        // Reload all data to refresh Dashboard and Journal views
         await loadUserData();
     }
-}
+};
 
 function updateStats() {
     document.getElementById('stat-total-books').innerText = stats.calculateTotalBooks(myBooks);
     document.getElementById('stat-avg-rating').innerText = stats.calculateAvgRating(myReviews);
+    
+    const favoritesCount = myReviews.filter(r => r.is_favorite).length;
+    const favElem = document.getElementById('stat-favs');
+    if(favElem) favElem.innerText = favoritesCount;
 }
 
 async function performSearch() {
@@ -366,7 +488,7 @@ async function performSearch() {
         }
 
         results.forEach(book => {
-            const card = ui.renderBookCard(book, showBookDetails);
+            const card = ui.renderBookCard(book, showBookModal);
             container.appendChild(card);
         });
     } catch (error) {
@@ -376,100 +498,12 @@ async function performSearch() {
     }
 }
 
-async function showBookDetails(book) {
-    ui.showModal();
-    const modalBody = document.getElementById('modal-body');
-    modalBody.innerHTML = '<div class="skeleton" style="width: 100%; height: 300px;"></div>';
-
-    const details = await api.getBookDetails(book.id);
-    
-    modalBody.innerHTML = `
-        <div style="flex: 1; min-width: 250px;">
-            <img src="${book.cover_url || 'https://via.placeholder.com/250x375'}" style="width: 100%; border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);">
-        </div>
-        <div style="flex: 2; min-width: 300px;">
-            <h2 style="margin-top: 0;">${details.title}</h2>
-            <p style="color: var(--secondary); font-weight: 600; margin-bottom: 0.5rem;">${book.author}</p>
-            
-            <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
-                <button class="lang-btn active" onclick="changeLang('${book.id}', 'es')">ES</button>
-                <button class="lang-btn" onclick="changeLang('${book.id}', 'en')">EN</button>
-                <button class="lang-btn" onclick="changeLang('${book.id}', 'it')">IT</button>
-            </div>
-
-            <div style="margin-bottom: 1.5rem;">
-                ${details.subject.slice(0, 5).map(s => `<span class="badge" style="margin-right:0.5rem; margin-bottom:0.5rem; display:inline-block;">${s}</span>`).join('')}
-            </div>
-            <p id="modal-description" style="color: var(--gray-800); line-height: 1.6; margin-bottom: 2rem; max-height: 200px; overflow-y: auto;">${details.description}</p>
-            
-            <div style="display: flex; gap: 1rem;">
-                <button id="add-to-journal-btn" class="btn btn-primary">Añadir al Journal</button>
-                <button id="mark-fav" class="btn btn-ghost">♥ Favorito</button>
-            </div>
-        </div>
-    `;
-
-    document.getElementById('add-to-journal-btn').onclick = () => addToJournal(book);
-    document.getElementById('mark-fav').onclick = () => toggleFavorite(book.id);
-}
-
-window.changeLang = async (bookId, lang) => {
-    const descEl = document.getElementById('modal-description');
-    
-    // Open Library mostly has single-language descriptions. 
-    // For real translation on the fly, we would need a Translation API.
-    // I'll add a visual indicator and explanation.
-    
-    ui.showToast('Buscando versión en ' + lang.toUpperCase() + '...');
-    
-    descEl.style.opacity = '0.5';
-    
-    document.querySelectorAll('.lang-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.innerText.toLowerCase() === lang);
-    });
-
-    // We try to fetch the details again. Open Library doesn't support 
-    // langRestrict, so usually this will return the same main description.
-    const details = await api.getBookDetails(bookId, lang);
-    if (details) {
-        descEl.innerText = details.description;
-        if (lang !== 'en' && details.description.length < 50) {
-            ui.showToast('Descripción no disponible en este idioma en Open Library.', 'info');
-        }
-    }
-    descEl.style.opacity = '1';
-};
-
-async function ensureBookExists(book) {
-    const { data: existingBook } = await supabase
-        .from('books')
-        .select('id')
-        .eq('id', book.id)
-        .maybeSingle();
-
-    if (!existingBook) {
-        const details = await api.getBookDetails(book.id);
-        const { error: insertError } = await supabase.from('books').insert([{
-            id: book.id,
-            title: book.title || 'Título desconocido',
-            author: book.author || 'Autor desconocido',
-            cover_url: book.cover_url,
-            description: details ? details.description : ''
-        }]);
-        if (insertError) throw insertError;
-    }
-}
-
 async function toggleFavorite(bookId) {
     if (!currentUser) return ui.showToast('Debes iniciar sesión primero', 'error');
-    
-    // Find the book in current state to get its metadata if needed
-    const book = myBooks.find(b => b.id === bookId) || 
-                 { id: bookId, title: 'Libro' }; // Fallback
+    const book = myBooks.find(b => b.id === bookId) || { id: bookId, title: 'Libro' }; 
 
     ui.showToast('Actualizando favorito...');
     try {
-        // Ensure book metadata exists before touching reviews
         await ensureBookExists(book);
 
         const { data, error: selectError } = await supabase
@@ -492,40 +526,91 @@ async function toggleFavorite(bookId) {
         if (upsertError) throw upsertError;
 
         ui.showToast(isFav ? 'Marcado como favorito ♥' : 'Quitado de favoritos', 'success');
-        loadUserData();
+        await loadUserData();
+        
+        // Re-open modal with updated state
+        const updatedBook = myBooks.find(b => b.id === bookId) || book;
+        showBookModal(updatedBook);
     } catch (e) {
         console.error('Favorite error:', e);
         ui.showToast(e.message || 'Error al actualizar favorito', 'error');
     }
 }
 
-async function addToJournal(book) {
+async function toggleJournal(book) {
     if (!currentUser) return ui.showToast('Debes iniciar sesión primero', 'error');
 
-    ui.showToast(`Añadiendo "${book.title}"...`);
-    
     try {
-        // 1. Ensure book exists in metadata table
         await ensureBookExists(book);
+        const existing = myBooks.find(b => b.id === book.id);
+        const isCurrentlyInJournal = existing ? existing.in_journal : false;
 
-        // 2. Add to user_books
-        const { error } = await supabase.from('user_books').insert([
-            { 
+        ui.showToast(isCurrentlyInJournal ? 'Quitando del Journal...' : 'Añadiendo al Journal...');
+
+        if (existing) {
+            const { error } = await supabase.from('user_books').update({ 
+                in_journal: !isCurrentlyInJournal,
+                status: isCurrentlyInJournal ? existing.status : 'reading' // Keep status if removing, set reading if adding
+            }).eq('id', existing.journal_id);
+            if (error) throw error;
+        } else {
+            const { error } = await supabase.from('user_books').insert([{ 
                 user_id: currentUser.id,
                 book_id: book.id,
-                status: 'want_to_read'
-            }
-        ]);
-        
-        if (error) {
-            if (error.code === '23505') throw new Error('Ya tienes este libro en tu journal');
-            throw error;
+                status: 'reading',
+                in_journal: true,
+                in_wishlist: false
+            }]);
+            if (error) throw error;
         }
         
-        ui.showToast('¡Añadido con éxito!', 'success');
-        loadUserData();
+        ui.showToast(isCurrentlyInJournal ? 'Quitado del Journal' : 'Añadido al Journal', 'success');
+        await loadUserData();
+        
+        const updatedBook = myBooks.find(b => b.id === book.id) || { ...book, in_journal: !isCurrentlyInJournal };
+        showBookModal(updatedBook);
+
     } catch (error) {
-        console.error('Add to journal error:', error);
+        console.error('Journal toggle error:', error);
+        ui.showToast(error.message, 'error');
+    }
+}
+
+async function toggleWishlist(book) {
+    if (!currentUser) return ui.showToast('Debes iniciar sesión primero', 'error');
+
+    try {
+        await ensureBookExists(book);
+        const existing = myBooks.find(b => b.id === book.id);
+        const isCurrentlyInWishlist = existing ? existing.in_wishlist : false;
+
+        ui.showToast(isCurrentlyInWishlist ? 'Quitando de Wishlist...' : 'Añadiendo a Wishlist...');
+
+        if (existing) {
+            const { error } = await supabase.from('user_books').update({ 
+                in_wishlist: !isCurrentlyInWishlist,
+                status: isCurrentlyInWishlist ? existing.status : 'want_to_read'
+            }).eq('id', existing.journal_id);
+            if (error) throw error;
+        } else {
+            const { error } = await supabase.from('user_books').insert([{ 
+                user_id: currentUser.id,
+                book_id: book.id,
+                status: 'want_to_read',
+                in_journal: false,
+                in_wishlist: true
+            }]);
+            if (error) throw error;
+        }
+        
+        ui.showToast(isCurrentlyInWishlist ? 'Quitado de Wishlist' : 'Añadido a Wishlist', 'success');
+        await loadUserData();
+
+        const updatedBook = myBooks.find(b => b.id === book.id) || { ...book, in_wishlist: !isCurrentlyInWishlist };
+        showBookModal(updatedBook);
+
+    } catch (error) {
+        console.error('Wishlist toggle error:', error);
         ui.showToast(error.message, 'error');
     }
 }

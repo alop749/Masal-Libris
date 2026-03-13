@@ -1,12 +1,13 @@
 export const stats = {
     calculateTotalBooks(books) {
-        return books.length;
+        return books.filter(b => b.in_journal).length;
     },
 
     calculateAvgRating(reviews) {
-        if (reviews.length === 0) return 0;
-        const sum = reviews.reduce((acc, rev) => acc + rev.rating, 0);
-        return (sum / reviews.length).toFixed(1);
+        const rated = reviews.filter(r => r.rating && r.rating > 0);
+        if (rated.length === 0) return 0;
+        const sum = rated.reduce((acc, rev) => acc + rev.rating, 0);
+        return (sum / rated.length).toFixed(1);
     },
 
     calculateTopGenres(books) {
