@@ -36,8 +36,9 @@ export const ui = {
     renderBookCard(book, onClick) {
         const card = document.createElement('div');
         card.className = 'book-card fade-in';
+        const coverUrl = book.cover_url && book.cover_url !== 'null' ? book.cover_url : 'https://res.cloudinary.com/dipfoimic/image/upload/v1773332563/Masal_Libris_PNG_cznoq3.png';
         card.innerHTML = `
-            <img src="${book.cover_url || 'https://via.placeholder.com/200x300?text=No+Cover'}" alt="${book.title}" class="book-cover">
+            <img src="${coverUrl}" onerror="this.onerror=null;this.src='https://res.cloudinary.com/dipfoimic/image/upload/v1773332563/Masal_Libris_PNG_cznoq3.png';" alt="${book.title}" class="book-cover" style="object-fit: contain; background: #fef2f2;">
             <div class="book-info">
                 <div class="book-title">${book.title}</div>
                 <div class="book-author">${book.author}</div>
